@@ -1,0 +1,21 @@
+{
+  "enabled": false,
+  "log_channel_id": null,
+  "punishment": "ban",
+  "time_window": 60,
+  "whitelist_users": [],
+  "whitelist_roles": [],
+  "thresholds": {
+    "channel_delete": 3,
+    "channel_create": 3,
+    "role_delete": 3,
+    "role_create": 3,
+    "member_ban": 3,
+    "member_kick": 5,
+    "webhook_create": 2,
+    "bot_add": 1,
+    "guild_update": 2,
+    "emoji_delete": 5
+  },
+  "tracker": {}
+}

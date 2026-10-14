@@ -1,0 +1,9 @@
+{
+  "welcome_channel_id": null,
+  "leave_channel_id": null,
+  "welcome_enabled": true,
+  "leave_enabled": true,
+  "welcome_message": "🎉 Welcome {user} to **{server}**! We are now **{count}** members.",
+  "leave_message": "👋 Goodbye {user}. We are now **{count}** members.",
+  "auto_role_id": null
+}

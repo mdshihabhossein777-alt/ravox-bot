@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "channel_id": null,
+  "mode": "text",
+  "cooldown": 30,
+  "ignore_bots": true,
+  "ignore_afk": true,
+  "mention": true,
+  "join_message": "🎙️ {user} joined voice. Assalamu Alaikum! 🌙",
+  "leave_message": "👋 {user} left voice. Fi Amanillah."
+}

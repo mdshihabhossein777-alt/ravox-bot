@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: ravox-bot
+    env: docker
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false

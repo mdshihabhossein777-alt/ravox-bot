@@ -1,0 +1,13 @@
+{
+  "enabled": false,
+  "log_channel_id": null,
+  "threshold": 3,
+  "time_window": 10,
+  "action": "mute",
+  "mute_duration": 60,
+  "warn_count": 2,
+  "ignore_bots": true,
+  "whitelist_roles": [],
+  "whitelist_channels": [],
+  "spam_tracker": {}
+}

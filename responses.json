@@ -1,0 +1,18 @@
+{
+  "exact": {
+    "hi": "Hello! 👋 I am Ravox. Use `!play <url>` to play music.",
+    "hello": "Hey there! 🎵 What do you want to listen to?",
+    "assalamu alaikum": "Walaikum Assalam! 🌙 How can I help you?",
+    "thanks": "You're welcome! 🙌",
+    "bye": "Goodbye! Come back soon 🎶"
+  },
+  "contains": {
+    "suno": "🎵 To play a Suno track, use `!play <suno_url>`.",
+    "spotify": "❌ Spotify is not supported. Use Suno or YouTube links.",
+    "help": "📖 Commands: `!play`, `!skip`, `!stop`, `!queue`, `!ping`",
+    "lag": "🐢 If it lags, run `!stop` then `!play` again."
+  },
+  "regex": {
+    "^\\?\\?\\?$": "What happened? 🤔 Type `!help`."
+  }
+}
