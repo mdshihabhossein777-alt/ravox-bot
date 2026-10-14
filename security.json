@@ -1,14 +1,1 @@
-{
-  "GUILD_ID_HERE": {
-    "enabled": true,
-    "log_channel_id": null,
-    "bot_threshold": 1,
-    "user_threshold": 3,
-    "spam_window": 5,
-    "spam_limit": 5,
-    "punishment": "ban",
-    "whitelist_bots": [],
-    "whitelist_users": [],
-    "whitelist_roles": []
-  }
-}
+{}

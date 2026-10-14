@@ -9,5 +9,13 @@
   "ignore_bots": true,
   "whitelist_roles": [],
   "whitelist_channels": [],
-  "spam_tracker": {}
+  "spam_tracker": {},
+  "1559864310497284117": {
+    "enabled": true,
+    "log_channel_id": 1559940929970905229,
+    "threshold": 3,
+    "time_window": 10,
+    "action": "mute",
+    "mute_duration": 60
+  }
 }

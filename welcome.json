@@ -11,5 +11,18 @@
     "welcome_message": "🎉 Welcome {user} to **{server}**!",
     "leave_message": "👋 Goodbye {user}.",
     "auto_role_id": null
+  },
+  "1559864310497284117": {
+    "welcome_channel_id": 1559935697702490243,
+    "leave_channel_id": null,
+    "welcome_enabled": true,
+    "leave_enabled": true,
+    "theme": "galaxy",
+    "type": "both",
+    "image_enabled": true,
+    "welcome_dm": true,
+    "welcome_message": "🎉 Welcome {user} to **{server}**!",
+    "leave_message": "👋 Goodbye {user}. We are now **{count}** members.",
+    "auto_role_id": null
   }
 }

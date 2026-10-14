@@ -2,6 +2,7 @@ import os
 import re
 import json
 import time
+import platform
 import asyncio
 import gc
 from collections import defaultdict
@@ -27,6 +28,9 @@ except ImportError:
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise SystemExit("❌ DISCORD_TOKEN env variable is missing.")
+
+# ================= FFMPEG PATH =================
+FFMPEG_EXE = "ffmpeg.exe" if platform.system() == "Windows" else "ffmpeg"
 
 # ================= JSON HELPERS =================
 def load_json(path, default=None):
@@ -126,7 +130,8 @@ def get_cfg(store, gid, default_fn):
         store[gid] = base
     return store[gid]
 
-# ================= BOT =================
+
+# ================= BOT CLASS =================
 class RavoxBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -144,20 +149,72 @@ class RavoxBot(commands.Bot):
         self.loud_tracker = defaultdict(list)
         self.nuke_tracker = defaultdict(list)
         self.spam_tracker = defaultdict(list)
+        self.vc247 = load_json("vc247.json", {})
+        self.reconnect_tasks = {}
 
+    # ---------- 24/7 VC ----------
+    async def ensure_vc_247(self, guild: discord.Guild):
+        """Keep bot in configured 24/7 VC."""
+        gid = str(guild.id)
+        cfg = self.vc247.get(gid)
+        if not cfg or not cfg.get("enabled"):
+            return
+
+        ch_id = cfg.get("channel_id")
+        ch = guild.get_channel(ch_id)
+        if not ch:
+            return
+
+        vc = guild.voice_client
+        if vc and vc.channel.id == ch_id and vc.is_connected():
+            return
+
+        try:
+            if vc:
+                await vc.move_to(ch)
+            else:
+                await ch.connect(self_deaf=True)
+            print(f"[247] Connected to {ch.name} in {guild.name}")
+        except Exception as e:
+            print(f"[247] Reconnect error: {e}")
+
+    async def vc_watchdog(self):
+        """Every 60s, ensure all 24/7 bots are connected."""
+        while True:
+            await asyncio.sleep(60)
+            for gid, cfg in list(self.vc247.items()):
+                if not cfg.get("enabled"):
+                    continue
+                guild = self.get_guild(int(gid))
+                if guild:
+                    await self.ensure_vc_247(guild)
+
+    # ---------- SETUP HOOK ----------
     async def setup_hook(self):
-        # Sync slash commands globally
         try:
             synced = await self.tree.sync()
             print(f"[Slash] Synced {len(synced)} commands.")
         except Exception as e:
             print(f"[Slash] Sync error: {e}")
+        asyncio.create_task(self.vc_watchdog())
 
+    # ---------- ON READY ----------
     async def on_ready(self):
         print(f"[Ravox] ✅ Logged in as {self.user} (ID: {self.user.id})")
-        await self.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.listening, name="/play 🎵")
-        )
+        try:
+            await self.change_presence(
+                activity=discord.Activity(type=discord.ActivityType.listening, name="/play 🎵")
+            )
+        except Exception:
+            pass
+
+        # Auto-rejoin 24/7 channels on startup
+        for gid, cfg in self.vc247.items():
+            if not cfg.get("enabled"):
+                continue
+            guild = self.get_guild(int(gid))
+            if guild:
+                asyncio.create_task(self.ensure_vc_247(guild))
 
     # ================= AUTO-RESPONSE + SPAM =================
     async def on_message(self, message: discord.Message):
@@ -242,7 +299,7 @@ class RavoxBot(commands.Bot):
         except Exception as e:
             print(f"[AntiSpam] Error: {e}")
 
-    # ================= WELCOME =================
+    # ================= WELCOME / LEAVE =================
     async def on_member_join(self, member: discord.Member):
         gid = str(member.guild.id)
         cfg = WELCOME.get(gid)
@@ -276,7 +333,6 @@ class RavoxBot(commands.Bot):
             await self._send_welcome(member, cfg, join=False)
 
     async def _send_welcome(self, member, cfg, join: bool):
-        gid = str(member.guild.id)
         ch_id = cfg.get("welcome_channel_id") if join else cfg.get("leave_channel_id")
         if not ch_id:
             return
@@ -332,11 +388,25 @@ class RavoxBot(commands.Bot):
         except Exception as e:
             print(f"[Welcome] Send error: {e}")
 
-    # ================= VOICE SALAM + ANTI-LOUD =================
+    # ================= VOICE SALAM + ANTI-LOUD + 24/7 =================
     async def on_voice_state_update(self, member, before, after):
         gid = str(member.guild.id)
 
-        # VC Salam
+        # ---- 24/7 Auto Rejoin ----
+        cfg247 = self.vc247.get(gid)
+        if cfg247 and cfg247.get("enabled"):
+            if member.id == self.user.id:
+                if after.channel is None and cfg247.get("auto_rejoin", True):
+                    delay = cfg247.get("reconnect_delay", 5)
+                    await asyncio.sleep(delay)
+                    asyncio.create_task(self.ensure_vc_247(member.guild))
+            else:
+                vc = member.guild.voice_client
+                target_id = cfg247.get("channel_id")
+                if vc and vc.channel and vc.channel.id != target_id:
+                    asyncio.create_task(self.ensure_vc_247(member.guild))
+
+        # ---- VC Salam ----
         cfg_vc = VCGREET.get(gid)
         if cfg_vc and cfg_vc.get("enabled"):
             try:
@@ -348,7 +418,7 @@ class RavoxBot(commands.Bot):
             except Exception as e:
                 print(f"[VCGreet] Error: {e}")
 
-        # Anti-Loud
+        # ---- Anti-Loud ----
         cfg_al = ANTILOUD.get(gid)
         if cfg_al and cfg_al.get("enabled") and not member.bot:
             try:
@@ -534,7 +604,7 @@ class RavoxBot(commands.Bot):
 
         if not vc:
             if interaction.user.voice:
-                vc = await interaction.user.voice.channel.connect()
+                vc = await interaction.user.voice.channel.connect(self_deaf=True)
             else:
                 return
 
@@ -548,6 +618,7 @@ class RavoxBot(commands.Bot):
 
             source = discord.FFmpegPCMAudio(
                 audio_url,
+                executable=FFMPEG_EXE,
                 before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
                 options="-vn",
             )
@@ -628,6 +699,79 @@ async def ping_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(f"🏓 Pong! `{round(bot.latency*1000)}ms`")
 
 
+# ---- 24/7 VC ----
+@tree.command(name="247", description="Toggle 24/7 voice mode")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="On", value="on"),
+    app_commands.Choice(name="Off", value="off"),
+    app_commands.Choice(name="Status", value="status"),
+])
+@app_commands.default_permissions(administrator=True)
+async def toggle_247(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    gid = str(interaction.guild.id)
+
+    if mode.value == "status":
+        cfg = bot.vc247.get(gid, {})
+        s = "ON" if cfg.get("enabled") else "OFF"
+        ch = f"<#{cfg.get('channel_id')}>" if cfg.get("channel_id") else "None"
+        return await interaction.response.send_message(
+            f"🎙️ **24/7 Mode:** `{s}`\nChannel: {ch}", ephemeral=True
+        )
+
+    if mode.value == "on":
+        if not interaction.user.voice:
+            return await interaction.response.send_message(
+                "❌ Join a voice channel first.", ephemeral=True
+            )
+        await interaction.response.defer()
+        ch = interaction.user.voice.channel
+
+        bot.vc247[gid] = {
+            "enabled": True,
+            "channel_id": ch.id,
+            "auto_rejoin": True,
+            "reconnect_delay": 5,
+        }
+        save_json("vc247.json", bot.vc247)
+
+        vc = interaction.guild.voice_client
+        if vc:
+            await vc.move_to(ch)
+        else:
+            await ch.connect(self_deaf=True)
+
+        await interaction.followup.send(f"✅ 24/7 enabled in {ch.mention}")
+
+    elif mode.value == "off":
+        if gid in bot.vc247:
+            bot.vc247[gid]["enabled"] = False
+            save_json("vc247.json", bot.vc247)
+        await interaction.response.send_message("✅ 24/7 disabled.", ephemeral=True)
+
+
+@tree.command(name="join", description="Join your voice channel")
+async def join_vc(interaction: discord.Interaction):
+    if not interaction.user.voice:
+        return await interaction.response.send_message("❌ Join a VC first.", ephemeral=True)
+    ch = interaction.user.voice.channel
+    vc = interaction.guild.voice_client
+    if vc:
+        await vc.move_to(ch)
+    else:
+        await ch.connect(self_deaf=True)
+    await interaction.response.send_message(f"✅ Joined {ch.mention}")
+
+
+@tree.command(name="leave", description="Leave voice channel")
+async def leave_vc(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc:
+        await vc.disconnect()
+        await interaction.response.send_message("👋 Left VC")
+    else:
+        await interaction.response.send_message("❌ Not in a VC.", ephemeral=True)
+
+
 # ---- Welcome ----
 @tree.command(name="setwelcome", description="Set welcome channel")
 @app_commands.describe(channel="Text channel for welcome messages")
@@ -658,7 +802,6 @@ async def setautorole_cmd(interaction: discord.Interaction, role: discord.Role):
 
 
 @tree.command(name="welcometheme", description="Choose a welcome card theme")
-@app_commands.describe(theme="Theme name")
 @app_commands.choices(theme=[
     app_commands.Choice(name="Galaxy 🌌", value="galaxy"),
     app_commands.Choice(name="Neon 💡", value="neon"),
@@ -878,6 +1021,9 @@ async def main():
         await bot.start(TOKEN)
     except Exception as e:
         print(f"[Bot] Crash: {e}")
+    finally:
+        if not bot.is_closed():
+            await bot.close()
 
 
 if __name__ == "__main__":
