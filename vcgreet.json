@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "channel_id": null,
+  "channel_id": 1559864311122362380,
   "mode": "text",
   "cooldown": 30,
   "ignore_bots": true,
