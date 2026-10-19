@@ -1,1 +1,14 @@
-{}
+{
+  "1559864310497284117": {
+    "enabled": false,
+    "log_channel_id": 1559952895430885527,
+    "bot_threshold": 1,
+    "user_threshold": 3,
+    "spam_window": 5,
+    "spam_limit": 5,
+    "punishment": "ban",
+    "whitelist_bots": [],
+    "whitelist_users": [],
+    "whitelist_roles": []
+  }
+}

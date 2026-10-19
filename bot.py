@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import re
 import json
 import time
@@ -141,8 +142,10 @@ class RavoxBot(commands.Bot):
         intents.guilds = True
         intents.moderation = True
         intents.webhooks = True
+        intents.presences = True
 
         super().__init__(command_prefix="!", intents=intents, max_messages=None)
+
         self.queues = {}
         self.vc_join_tracker = defaultdict(dict)
         self.vc_leave_tracker = defaultdict(dict)
@@ -152,12 +155,67 @@ class RavoxBot(commands.Bot):
         self.vc247 = load_json("vc247.json", {})
         self.reconnect_tasks = {}
 
-    # ---------- 24/7 VC ----------
+        # 🔧 Reconnect cooldown (loop ঠেকানোর জন্য)
+        self.last_reconnect = {}       # guild_id -> timestamp
+        self.reconnect_cooldown = 15   # seconds
+        self.idle_timers = {}          # guild_id -> asyncio.Task
+
+        # Local audio folder
+        self.audio_dir = Path("audio")
+        self.audio_dir.mkdir(exist_ok=True)
+        self.local_audios = self._scan_audio_files()
+        print(f"[Audio] Found {len(self.local_audios)} local audio files")
+
+        # Per-user one-time device log tracker
+        self.logged_users = set(
+            tuple(x) for x in load_json("devicelogs.json", [])
+        )
+
+    # ---------- Audio Helpers ----------
+    def _scan_audio_files(self):
+        exts = {".mp3", ".m4a", ".wav", ".opus", ".flac", ".ogg", ".aac", ".webm"}
+        files = {}
+        try:
+            for f in self.audio_dir.iterdir():
+                if f.is_file() and f.suffix.lower() in exts:
+                    key = f.stem.lower()
+                    files[key] = str(f)
+        except Exception as e:
+            print(f"[Audio] Scan error: {e}")
+        return files
+
+    def reload_audios(self):
+        self.local_audios = self._scan_audio_files()
+        return len(self.local_audios)
+
+    def _resolve_local_audio(self, query: str):
+        if not query:
+            return None
+        exts = {".mp3", ".m4a", ".wav", ".opus", ".flac", ".ogg", ".aac", ".webm"}
+
+        p = Path(query)
+        if p.is_file() and p.suffix.lower() in exts:
+            return str(p)
+
+        key = p.stem.lower() if p.suffix else query.lower().strip()
+        if key in self.local_audios:
+            return self.local_audios[key]
+
+        for name, path in self.local_audios.items():
+            if key in name:
+                return path
+        return None
+
+    # ---------- 24/7 VC (with cooldown) ----------
     async def ensure_vc_247(self, guild: discord.Guild):
-        """Keep bot in configured 24/7 VC."""
         gid = str(guild.id)
         cfg = self.vc247.get(gid)
         if not cfg or not cfg.get("enabled"):
+            return
+
+        # 🔧 Cooldown check — loop prevent
+        last = self.last_reconnect.get(gid, 0)
+        if now() - last < self.reconnect_cooldown:
             return
 
         ch_id = cfg.get("channel_id")
@@ -166,8 +224,11 @@ class RavoxBot(commands.Bot):
             return
 
         vc = guild.voice_client
-        if vc and vc.channel.id == ch_id and vc.is_connected():
+        # Already in correct channel and connected
+        if vc and vc.channel and vc.channel.id == ch_id and vc.is_connected():
             return
+
+        self.last_reconnect[gid] = now()
 
         try:
             if vc:
@@ -179,7 +240,6 @@ class RavoxBot(commands.Bot):
             print(f"[247] Reconnect error: {e}")
 
     async def vc_watchdog(self):
-        """Every 60s, ensure all 24/7 bots are connected."""
         while True:
             await asyncio.sleep(60)
             for gid, cfg in list(self.vc247.items()):
@@ -208,7 +268,6 @@ class RavoxBot(commands.Bot):
         except Exception:
             pass
 
-        # Auto-rejoin 24/7 channels on startup
         for gid, cfg in self.vc247.items():
             if not cfg.get("enabled"):
                 continue
@@ -216,12 +275,61 @@ class RavoxBot(commands.Bot):
             if guild:
                 asyncio.create_task(self.ensure_vc_247(guild))
 
-    # ================= AUTO-RESPONSE + SPAM =================
+    # ================= ON MESSAGE =================
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.content:
             return
 
-        # -------- SPAM DETECTION --------
+        # ========== PER-USER ONE-TIME DEVICE LOG ==========
+        if message.guild:
+            gid = str(message.guild.id)
+            cfg = SECURITY.get(gid, {})
+            log_id = cfg.get("log_channel_id")
+            user_key = (message.guild.id, message.author.id)
+
+            if log_id and user_key not in self.logged_users:
+                self.logged_users.add(user_key)
+                save_json("devicelogs.json", [list(x) for x in self.logged_users])
+
+                cs = message.author.client_status
+                devices = []
+                if cs.desktop:
+                    devices.append("💻 PC")
+                if cs.mobile:
+                    devices.append("📱 Mobile")
+                if cs.web:
+                    devices.append("🌐 Web")
+                device_str = " + ".join(devices) if devices else "❓ Unknown (Offline/Invisible)"
+
+                print(f"[NEW USER] {message.author.name} ({device_str})")
+
+                log_ch = message.guild.get_channel(log_id)
+                if log_ch:
+                    try:
+                        embed = discord.Embed(
+                            title="🆕 First Message Detected",
+                            color=0x7C3AED,
+                            timestamp=discord.utils.utcnow(),
+                        )
+                        embed.add_field(
+                            name="👤 User",
+                            value=f"{message.author.mention}\n`{message.author}` (`{message.author.id}`)",
+                            inline=False,
+                        )
+                        embed.add_field(name="📱 Device", value=device_str, inline=True)
+                        embed.add_field(name="📍 Channel", value=message.channel.mention, inline=True)
+                        embed.add_field(
+                            name="💬 First Message",
+                            value=message.content[:500] or "*[no text]*",
+                            inline=False,
+                        )
+                        embed.set_thumbnail(url=message.author.display_avatar.url)
+                        embed.set_footer(text=f"Guild: {message.guild.name}")
+                        await log_ch.send(embed=embed)
+                    except Exception as e:
+                        print(f"[DeviceLog] Error: {e}")
+
+        # ========== SPAM DETECTION ==========
         if message.guild:
             gid = str(message.guild.id)
             cfg = SECURITY.get(gid)
@@ -244,7 +352,7 @@ class RavoxBot(commands.Bot):
                             await self._spam_punish(message, cfg)
                             return
 
-        # -------- AUTO RESPONSE --------
+        # ========== AUTO RESPONSE ==========
         content = message.content.strip()
         lower = content.lower()
 
@@ -388,23 +496,27 @@ class RavoxBot(commands.Bot):
         except Exception as e:
             print(f"[Welcome] Send error: {e}")
 
-    # ================= VOICE SALAM + ANTI-LOUD + 24/7 =================
+    # ================= VOICE STATE UPDATE =================
     async def on_voice_state_update(self, member, before, after):
         gid = str(member.guild.id)
 
-        # ---- 24/7 Auto Rejoin ----
+        # ---- 24/7 Auto Rejoin (SAFE — cooldown protected) ----
         cfg247 = self.vc247.get(gid)
         if cfg247 and cfg247.get("enabled"):
+            # শুধু bot নিজে disconnect হলে rejoin
             if member.id == self.user.id:
                 if after.channel is None and cfg247.get("auto_rejoin", True):
-                    delay = cfg247.get("reconnect_delay", 5)
-                    await asyncio.sleep(delay)
-                    asyncio.create_task(self.ensure_vc_247(member.guild))
-            else:
-                vc = member.guild.voice_client
-                target_id = cfg247.get("channel_id")
-                if vc and vc.channel and vc.channel.id != target_id:
-                    asyncio.create_task(self.ensure_vc_247(member.guild))
+                    last = self.last_reconnect.get(gid, 0)
+                    if now() - last >= self.reconnect_cooldown:
+                        self.last_reconnect[gid] = now()
+                        delay = cfg247.get("reconnect_delay", 5)
+
+                        async def _delayed_rejoin(g):
+                            await asyncio.sleep(delay)
+                            await self.ensure_vc_247(g)
+
+                        asyncio.create_task(_delayed_rejoin(member.guild))
+            # ⚠️ `else` block removed — এটাই loop-এর মূল কারণ ছিল
 
         # ---- VC Salam ----
         cfg_vc = VCGREET.get(gid)
@@ -597,6 +709,25 @@ class RavoxBot(commands.Bot):
         gid = interaction.guild.id
         q = self.queues.get(gid, [])
         if not q:
+            # Queue empty — non-247 mode হলে ৩০ সেকেন্ড পর disconnect
+            cfg247 = self.vc247.get(str(gid), {})
+            if not cfg247.get("enabled"):
+                old = self.idle_timers.get(gid)
+                if old and not old.done():
+                    old.cancel()
+
+                async def _idle_disconnect(guild):
+                    await asyncio.sleep(30)
+                    if not self.queues.get(guild.id) and guild.voice_client:
+                        cfg = self.vc247.get(str(guild.id), {})
+                        if not cfg.get("enabled"):
+                            try:
+                                await guild.voice_client.disconnect()
+                                print(f"[Music] Auto-disconnected from {guild.name}")
+                            except Exception:
+                                pass
+
+                self.idle_timers[gid] = asyncio.create_task(_idle_disconnect(interaction.guild))
             return
 
         title, url = q.pop(0)
@@ -609,19 +740,28 @@ class RavoxBot(commands.Bot):
                 return
 
         try:
-            with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if "entries" in info:
-                    info = info["entries"][0]
-                audio_url = info["url"]
-                title = info.get("title", title)
+            local_path = self._resolve_local_audio(url)
+            if local_path:
+                source = discord.FFmpegPCMAudio(
+                    local_path,
+                    executable=FFMPEG_EXE,
+                    options="-vn",
+                )
+                title = Path(local_path).stem
+            else:
+                with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if "entries" in info:
+                        info = info["entries"][0]
+                    audio_url = info["url"]
+                    title = info.get("title", title)
 
-            source = discord.FFmpegPCMAudio(
-                audio_url,
-                executable=FFMPEG_EXE,
-                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-                options="-vn",
-            )
+                source = discord.FFmpegPCMAudio(
+                    audio_url,
+                    executable=FFMPEG_EXE,
+                    before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                    options="-vn",
+                )
 
             def after(err):
                 if err:
@@ -637,6 +777,7 @@ class RavoxBot(commands.Bot):
                 await interaction.channel.send(f"🎵 Now playing: **{title}**")
             except Exception:
                 pass
+
         except Exception as e:
             print(f"[Music] Error: {e}")
             try:
@@ -653,17 +794,60 @@ tree = bot.tree
 # ================= SLASH COMMANDS =================
 
 # ---- Music ----
-@tree.command(name="play", description="Play a Suno/YouTube track")
-@app_commands.describe(query="Suno/YouTube URL or search")
+@tree.command(name="play", description="Play a local audio file or Suno/YouTube URL")
+@app_commands.describe(query="Local filename, Suno URL, or YouTube search")
 async def play_cmd(interaction: discord.Interaction, query: str):
     if not interaction.user.voice:
         return await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
+
     await interaction.response.defer()
+
+    # Cancel idle disconnect timer
+    old = bot.idle_timers.get(interaction.guild.id)
+    if old and not old.done():
+        old.cancel()
+
+    local_path = bot._resolve_local_audio(query)
+    if local_path:
+        await interaction.followup.send(f"📁 Playing local file: **{Path(local_path).stem}**")
+    else:
+        await interaction.followup.send(f"🔍 Searching: **{query}**")
+
     bot.queues.setdefault(interaction.guild.id, []).append((query, query))
     if not interaction.guild.voice_client or not interaction.guild.voice_client.is_playing():
         await bot.play_next(interaction)
-    else:
-        await interaction.followup.send("📥 Added to queue.")
+
+
+@tree.command(name="audios", description="List all local audio files")
+async def audios_cmd(interaction: discord.Interaction):
+    if not bot.local_audios:
+        return await interaction.response.send_message(
+            "📭 No local audio files found in `audio/` folder.", ephemeral=True
+        )
+
+    names = sorted(bot.local_audios.keys())
+    lines = [f"`{i+1}.` {n}" for i, n in enumerate(names[:50])]
+    text = "\n".join(lines)
+
+    if len(names) > 50:
+        text += f"\n\n*... এবং আরও {len(names) - 50}টি*"
+
+    embed = discord.Embed(
+        title=f"📁 Local Audio Files ({len(names)})",
+        description=text,
+        color=0x7C3AED,
+    )
+    embed.set_footer(text="Play with /play <filename>")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@tree.command(name="reloadaudio", description="Reload audio folder (Admin)")
+@app_commands.default_permissions(administrator=True)
+async def reloadaudio_cmd(interaction: discord.Interaction):
+    count = bot.reload_audios()
+    await interaction.response.send_message(
+        f"🔄 Reloaded. **{count}** audio files found.", ephemeral=True
+    )
 
 
 @tree.command(name="skip", description="Skip the current track")
@@ -734,6 +918,11 @@ async def toggle_247(interaction: discord.Interaction, mode: app_commands.Choice
         }
         save_json("vc247.json", bot.vc247)
 
+        # Cancel any pending idle disconnect
+        old = bot.idle_timers.get(interaction.guild.id)
+        if old and not old.done():
+            old.cancel()
+
         vc = interaction.guild.voice_client
         if vc:
             await vc.move_to(ch)
@@ -746,7 +935,14 @@ async def toggle_247(interaction: discord.Interaction, mode: app_commands.Choice
         if gid in bot.vc247:
             bot.vc247[gid]["enabled"] = False
             save_json("vc247.json", bot.vc247)
-        await interaction.response.send_message("✅ 24/7 disabled.", ephemeral=True)
+        # 🔧 Instant disconnect
+        vc = interaction.guild.voice_client
+        if vc:
+            try:
+                await vc.disconnect()
+            except Exception:
+                pass
+        await interaction.response.send_message("✅ 24/7 disabled and disconnected.", ephemeral=True)
 
 
 @tree.command(name="join", description="Join your voice channel")
@@ -770,6 +966,93 @@ async def leave_vc(interaction: discord.Interaction):
         await interaction.response.send_message("👋 Left VC")
     else:
         await interaction.response.send_message("❌ Not in a VC.", ephemeral=True)
+
+
+# ---- Device Check ----
+@tree.command(name="device", description="Check which device a user is on")
+@app_commands.describe(user="User to check (leave empty for yourself)")
+async def device_cmd(interaction: discord.Interaction, user: discord.Member = None):
+    try:
+        await interaction.response.defer()
+        target = user or interaction.user
+        cs = target.client_status
+
+        devices = []
+        if cs.desktop:
+            devices.append("💻 **PC** (Desktop App)")
+        if cs.mobile:
+            devices.append("📱 **Mobile** (Phone App)")
+        if cs.web:
+            devices.append("🌐 **Web** (Browser)")
+
+        if not devices:
+            device_text = "❌ Offline বা কোনো ডিভাইসে অনলাইন নেই"
+            color = 0xEF4444
+        else:
+            device_text = "\n".join(f"✅ {d}" for d in devices)
+            color = 0x7C3AED
+
+        status_emoji = {
+            "online": "🟢", "idle": "🌙", "dnd": "⛔", "offline": "⚫",
+        }.get(str(target.status), "❓")
+
+        embed = discord.Embed(
+            title=f"📡 Device Status — {target.display_name}",
+            description=device_text,
+            color=color,
+        )
+        embed.add_field(name="Status", value=f"{status_emoji} {str(target.status).title()}", inline=True)
+        embed.add_field(name="User", value=f"{target} (`{target.id}`)", inline=True)
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        print(f"[Device CMD] Error: {e}")
+        try:
+            await interaction.followup.send(f"❌ Error: `{e}`", ephemeral=True)
+        except Exception:
+            pass
+
+
+@tree.command(name="devicelog", description="Show your own device status")
+async def devicelog_cmd(interaction: discord.Interaction):
+    try:
+        await interaction.response.defer(ephemeral=True)
+        cs = interaction.user.client_status
+        devices = []
+        if cs.desktop:
+            devices.append("💻 **PC** (Desktop App)")
+        if cs.mobile:
+            devices.append("📱 **Mobile** (Phone App)")
+        if cs.web:
+            devices.append("🌐 **Web** (Browser)")
+
+        text = "\n".join(f"✅ {d}" for d in devices) if devices else "❌ Offline"
+        embed = discord.Embed(
+            title=f"📡 {interaction.user.display_name}",
+            description=text,
+            color=0x7C3AED,
+        )
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        print(f"[DeviceLog CMD] Error: {e}")
+        try:
+            await interaction.followup.send(f"❌ Error: `{e}`", ephemeral=True)
+        except Exception:
+            pass
+
+
+@tree.command(name="resetdevicelog", description="Reset first-message device log (Admin)")
+@app_commands.default_permissions(administrator=True)
+async def reset_devicelog_cmd(interaction: discord.Interaction):
+    bot.logged_users = {k for k in bot.logged_users if k[0] != interaction.guild.id}
+    save_json("devicelogs.json", [list(x) for x in bot.logged_users])
+    await interaction.response.send_message(
+        "✅ Device log tracking reset. Everyone will be logged again.",
+        ephemeral=True,
+    )
 
 
 # ---- Welcome ----
@@ -935,13 +1218,17 @@ async def antinuke_cmd(interaction: discord.Interaction, mode: app_commands.Choi
     await interaction.response.send_message(f"✅ Anti-Nuke: **{mode.name}**", ephemeral=True)
 
 
-@tree.command(name="antinukelog", description="Set Anti-Nuke log channel")
+@tree.command(name="antinukelog", description="Set Anti-Nuke + Device Log channel")
 @app_commands.default_permissions(administrator=True)
 async def antinukelog_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
     cfg = get_cfg(SECURITY, interaction.guild.id, default_security)
     cfg["log_channel_id"] = channel.id
     save_json("security.json", SECURITY)
-    await interaction.response.send_message(f"✅ Anti-Nuke log: {channel.mention}", ephemeral=True)
+    await interaction.response.send_message(
+        f"✅ Log channel set to {channel.mention}\n"
+        f"📌 এখানে Anti-Nuke, Spam, এবং Device log সব যাবে।",
+        ephemeral=True,
+    )
 
 
 @tree.command(name="trust", description="Whitelist a user from Anti-Nuke")

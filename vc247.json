@@ -1,7 +1,7 @@
 {
   "1559864310497284117": {
-    "enabled": false,
-    "channel_id": 1559940691315007619,
+    "enabled": true,
+    "channel_id": 1560289994474659950,
     "auto_rejoin": true,
     "reconnect_delay": 5
   }
